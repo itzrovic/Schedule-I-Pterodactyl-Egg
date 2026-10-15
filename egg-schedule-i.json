@@ -1,0 +1,225 @@
+{
+    "_comment": "DO NOT EDIT: FILE GENERATED AUTOMATICALLY BY PTERODACTYL PANEL - PTERODACTYL.IO",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-10-15T12:00:00+00:00",
+    "name": "Schedule I (DedicatedServerMod)",
+    "author": "your-email@example.com",
+    "description": "Schedule I dedicated server using MelonLoader and ifBars' DedicatedServerMod (github.com/ifBars/S1DedicatedServers), running under Wine. Supports the Mono (alternate) and IL2CPP (public) branches. Requires a Steam account that owns Schedule I. Players need the matching client mod and the same game branch.",
+    "features": [
+        "steam_disk_space"
+    ],
+    "docker_images": {
+        "Wine Latest": "ghcr.io/ptero-eggs/yolks:wine_latest",
+        "Wine Staging": "ghcr.io/ptero-eggs/yolks:wine_staging"
+    },
+    "file_denylist": [],
+    "startup": "bash ./s1ds_start.sh",
+    "config": {
+        "files": "{}",
+        "startup": "{\"done\": \"DEDICATED SERVER READY\"}",
+        "logs": "{}",
+        "stop": "shutdown"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# Schedule I Dedicated Server (S1DedicatedServers + MelonLoader) - Pterodactyl install script\n# Runs in the installer container as root; server files live in /mnt/server.\n\napt-get update -y\napt-get install -y --no-install-recommends curl unzip ca-certificates lib32gcc-s1 || true\n\nSERVER_DIR=/mnt/server\nAPPID=3164500\nmkdir -p \"${SERVER_DIR}/steamcmd\" \"${SERVER_DIR}/.s1ds\" \"${SERVER_DIR}/Mods\" \"${SERVER_DIR}/UserLibs\" \"${SERVER_DIR}/Plugins\"\ncd /tmp || exit 1\n\n## ---------- SteamCMD ----------\necho \"==> Installing SteamCMD\"\ncurl -sSL -o steamcmd.tar.gz https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz\ntar -xzf steamcmd.tar.gz -C \"${SERVER_DIR}/steamcmd\"\nmkdir -p \"${SERVER_DIR}/steamapps\"\n# Steam stores the login/sentry under $HOME -> keep it in the server directory so auto-update\n# on later starts works without a new Steam Guard code\nexport HOME=\"${SERVER_DIR}\"\ncd \"${SERVER_DIR}/steamcmd\" || exit 1\n\n## ---------- Game download ----------\nif [ -n \"${STEAM_USER}\" ] && [ \"${STEAM_USER}\" != \"anonymous\" ]; then\n    echo \"==> Downloading Schedule I (app ${APPID}), branch: ${SRCDS_BETAID:-public}\"\n    ./steamcmd.sh +@sSteamCmdForcePlatformType windows \\\n        +force_install_dir \"${SERVER_DIR}\" \\\n        +login \"${STEAM_USER}\" \"${STEAM_PASS}\" ${STEAM_AUTH} \\\n        +app_update ${APPID} $( [ -n \"${SRCDS_BETAID}\" ] && printf %s \"-beta ${SRCDS_BETAID}\" ) validate \\\n        +quit\nelse\n    echo \"!!! STEAM_USER is not set: the game will NOT be downloaded.\"\n    echo \"!!! Upload the Windows game files of Schedule I to /home/container via SFTP\"\n    echo \"!!! and set AUTO_UPDATE to 0.\"\nfi\n\n## ---------- Steamworks redist (steamclient64.dll etc. for SteamGameServer) ----------\necho \"==> Installing Steamworks SDK Redist (app 1007)\"\n./steamcmd.sh +@sSteamCmdForcePlatformType windows \\\n    +force_install_dir \"${SERVER_DIR}\" \\\n    +login anonymous \\\n    +app_update 1007 validate \\\n    +quit\n\n# Linux steamclient for SteamCMD (used by the auto-update in the runtime container)\nmkdir -p \"${SERVER_DIR}/.steam/sdk32\" \"${SERVER_DIR}/.steam/sdk64\"\ncp -f linux32/steamclient.so \"${SERVER_DIR}/.steam/sdk32/steamclient.so\" 2>/dev/null || true\ncp -f linux64/steamclient.so \"${SERVER_DIR}/.steam/sdk64/steamclient.so\" 2>/dev/null || true\n\ncd /tmp || exit 1\n\n## ---------- MelonLoader ----------\nML_VERSION=\"${MELONLOADER_VERSION:-v0.7.2}\"\necho \"==> Installing MelonLoader ${ML_VERSION}\"\ncurl -sSL -o MelonLoader.x64.zip \"https://github.com/LavaGang/MelonLoader/releases/download/${ML_VERSION}/MelonLoader.x64.zip\"\nunzip -o -q MelonLoader.x64.zip -d \"${SERVER_DIR}\"\n\n## ---------- DedicatedServerMod ----------\nif [ -z \"${S1DS_VERSION}\" ] || [ \"${S1DS_VERSION}\" == \"latest\" ]; then\n    S1DS_BASE=\"https://github.com/ifBars/S1DedicatedServers/releases/latest/download\"\nelse\n    S1DS_BASE=\"https://github.com/ifBars/S1DedicatedServers/releases/download/${S1DS_VERSION}\"\nfi\necho \"==> Downloading DedicatedServerMod (${S1DS_VERSION:-latest})\"\ncurl -sSL -o Mono-Server.zip \"${S1DS_BASE}/Mono-Server.zip\"\ncurl -sSL -o Il2cpp_Server.zip \"${S1DS_BASE}/Il2cpp_Server.zip\"\n# Keep both variants; the start script picks the one matching the installed game branch\nunzip -o -q -j Mono-Server.zip 'Mods/*' -d \"${SERVER_DIR}/.s1ds\"\nunzip -o -q -j Il2cpp_Server.zip 'Mods/*' -d \"${SERVER_DIR}/.s1ds\"\nls -la \"${SERVER_DIR}/.s1ds\"\n\necho \"${APPID}\" > \"${SERVER_DIR}/steam_appid.txt\"\n\n## ---------- Start script ----------\ncat > \"${SERVER_DIR}/s1ds_start.sh\" << 'EOF'\n#!/bin/bash\n# Called by the Pterodactyl startup command (Wine yolk). Overwritten on every reinstall.\ncd /home/container || exit 1\n\nAPPID=3164500\nGAME_EXE=\"Schedule I.exe\"\n\nif [ ! -f \"${GAME_EXE}\" ]; then\n    echo \"ERROR: '${GAME_EXE}' not found. Check the Steam login and reinstall the server (or upload the game files via SFTP).\"\n    exit 1\nfi\n\n# Detect the runtime from the game files: IL2CPP builds ship GameAssembly.dll\nif [ -f \"GameAssembly.dll\" ]; then\n    RUNTIME=il2cpp; MOD_DLL=DedicatedServerMod_Il2cpp_Server.dll\nelse\n    RUNTIME=mono; MOD_DLL=DedicatedServerMod_Mono_Server.dll\nfi\necho \"==> Detected runtime: ${RUNTIME}\"\n\nmkdir -p Mods\nrm -f Mods/DedicatedServerMod_Mono_Server.dll Mods/DedicatedServerMod_Il2cpp_Server.dll\nif [ -f \".s1ds/${MOD_DLL}\" ]; then\n    cp -f \".s1ds/${MOD_DLL}\" \"Mods/${MOD_DLL}\"\nelse\n    echo \"WARNING: .s1ds/${MOD_DLL} is missing - reinstall the server.\"\nfi\n\n# Only clear the Cpp2IL cache after game updates (otherwise every IL2CPP start would be slow)\nif [ \"${RUNTIME}\" == \"il2cpp\" ]; then\n    HASH=$(md5sum GameAssembly.dll | cut -d' ' -f1)\n    if [ \"$(cat .s1ds/gameassembly.md5 2>/dev/null)\" != \"${HASH}\" ]; then\n        echo \"==> Game version changed: clearing Cpp2IL cache\"\n        rm -rf MelonLoader/Dependencies/Il2CppAssemblyGenerator/Cpp2IL/cpp2il_out\n        echo \"${HASH}\" > .s1ds/gameassembly.md5\n    fi\nfi\n\n# Write the Pterodactyl allocation ports into the config (it only exists after the first start)\nCFG=$(find UserData -maxdepth 3 -name server_config.toml 2>/dev/null | head -n 1)\nif [ -n \"${CFG}\" ]; then\n    sed -i -E \"s/^([[:space:]]*serverPort[[:space:]]*=[[:space:]]*).*/\\1${SERVER_PORT}/\" \"${CFG}\"\n    if [ -n \"${QUERY_PORT}\" ]; then\n        sed -i -E \"s/^([[:space:]]*steamGameServerQueryPort[[:space:]]*=[[:space:]]*).*/\\1${QUERY_PORT}/\" \"${CFG}\"\n    fi\n    echo \"==> Ports set in ${CFG}: serverPort=${SERVER_PORT}, steamGameServerQueryPort=${QUERY_PORT}\"\nelse\n    echo \"==> First start: server_config.toml will be generated (default port 38465).\"\n    if [ \"${SERVER_PORT}\" != \"38465\" ]; then\n        echo \"    Your allocation is ${SERVER_PORT} - restart once after the first start so the port is applied.\"\n    fi\nfi\n\n# UTF-8 locale, otherwise Wine cannot create files with non-ASCII names (e.g. NPC \"Javier Pérez\")\nexport LANG=C.UTF-8\nexport LC_ALL=C.UTF-8\n\necho \"${APPID}\" > steam_appid.txt\nexport SteamAppId=${APPID}\nexport SteamGameId=${APPID}\n# version.dll = MelonLoader proxy; load the Steam DLLs natively\n# winedbg.exe=d: a crash on exit would otherwise start the Wine debugger, which keeps the process alive\nexport WINEDLLOVERRIDES=\"version=n,b;steam_api64=n,b;steamclient64=n,b;tier0_s64=n,b;vstdlib_s64=n,b;winedbg.exe=d\"\n\nARGS=(-batchmode -nographics -logFile \"Z:\\home\\container\\UnityPlayer.log\"\n      --dedicated-server\n      --server-name \"${SERVER_NAME:-Schedule I Server}\"\n      --max-players \"${MAX_PLAYERS:-4}\"\n      --messaging-backend \"${MESSAGING_BACKEND:-FishNetRpc}\")\n\nif [ -n \"${SERVER_PASSWORD}\" ]; then\n    ARGS+=(--server-password \"${SERVER_PASSWORD}\")\nfi\n\nif [ \"${AUTH_PROVIDER}\" == \"None\" ]; then\n    ARGS+=(--disable-auth)\nelse\n    ARGS+=(--require-auth --auth-provider SteamGameServer --steam-gs-anonymous)\nfi\n\n# Console: Wine does not reliably pass stdin to the game. So a TCP console runs on 127.0.0.1\n# inside the container only, and this script forwards panel input to it.\nCONSOLE_PORT=${CONSOLE_PORT:-4050}\nCONSOLE_PASS=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \\n')\nARGS+=(--no-stdio-console --tcp-console --tcp-console-bind 127.0.0.1\n       --tcp-console-port \"${CONSOLE_PORT}\" --tcp-console-password \"${CONSOLE_PASS}\")\n\necho \"==> Starting: wine \\\"${GAME_EXE}\\\" (arguments without passwords) ${SERVER_NAME:+--server-name \\\"${SERVER_NAME}\\\"} ${EXTRA_ARGS}\"\n# Hide Wine debug output (fixme)\nexport WINEDEBUG=-all\n# Unity/MelonLoader do not write to stdout under Wine -> mirror the MelonLoader log to the panel\n# (this is also how the panel detects \"DEDICATED SERVER READY\")\ntail -n 0 -F MelonLoader/Latest.log 2>/dev/null &\nTAIL_PID=$!\n# Errors from the game itself only show up in the Unity log -> mirror error lines to the panel too\n: > UnityPlayer.log\ntail -n 0 -F UnityPlayer.log 2>/dev/null | grep --line-buffered -iE \"exception|error\" | grep --line-buffered -viE \"ALSA|fixme|shader|graphics buffer|GPU readback\" | grep --line-buffered -vE '^[[:space:]]*[A-Za-z0-9_.+]+:[A-Za-z0-9_<>.]+ ?\\(.*\\)[[:space:]]*$' | sed -u 's/^/[Unity] /' &\n\n# EXTRA_ARGS intentionally unquoted so multiple arguments work\nwine \"${GAME_EXE}\" \"${ARGS[@]}\" ${EXTRA_ARGS} < /dev/null &\nGAME_PID=$!\n\nsend_cmd() {\n    local cmd=\"$1\"\n    if ! exec 3<>\"/dev/tcp/127.0.0.1/${CONSOLE_PORT}\" 2>/dev/null; then\n        echo \"[Console] Server not ready yet - command '${cmd}' was not sent.\"\n        return 1\n    fi\n    printf '%s\\n%s\\nexit\\n' \"${CONSOLE_PASS}\" \"${cmd}\" >&3\n    # Only print the command's reply (hide banner/login/goodbye)\n    timeout 15 cat <&3 | tr -d '\\r' | awk '\n        { sub(/^.*Password: /, \"\"); while (sub(/^> /, \"\")) {} }\n        /^Authenticated\\./ {on=1; next}\n        /^Goodbye\\./ {exit}\n        on && length($0) { print \"[Console] \" $0 }'\n    exec 3<&- 3>&-\n}\n\nSTOPPING=0\ngraceful_stop() {\n    [ \"${STOPPING}\" == \"1\" ] && return\n    STOPPING=1\n    if [ \"${STOP_MODE}\" == \"mod\" ]; then\n        # Since DedicatedServerMod v1.1.2, \"shutdown\" waits for the final save itself\n        echo \"==> Shutting down via the mod (shutdown)...\"\n        send_cmd \"shutdown\"\n        for i in $(seq 1 90); do\n            kill -0 \"${GAME_PID}\" 2>/dev/null || return\n            sleep 1\n        done\n        echo \"==> WARNING: server still running after 90 s (save failed or game hung). Killing it.\"\n        kill -9 \"${GAME_PID}\" 2>/dev/null\n        wineserver -k 2>/dev/null\n        return\n    fi\n    # Mode \"script\" (default): do NOT send \"shutdown\" to the mod. Up to v1.1.1 its shutdown save\n    # blocked the main thread and quit while the save was still running, wiping business data\n    # (ifBars/S1DedicatedServers#71). Instead: save normally, wait for \"Save complete\" in the\n    # Unity log, then kill the process.\n    echo \"==> Saving...\"\n    local before now i\n    before=$(grep -c \"Save complete\" UnityPlayer.log 2>/dev/null)\n    send_cmd \"save\"\n    for i in $(seq 1 60); do\n        now=$(grep -c \"Save complete\" UnityPlayer.log 2>/dev/null)\n        [ \"${now:-0}\" -gt \"${before:-0}\" ] && break\n        sleep 1\n    done\n    if [ \"${now:-0}\" -gt \"${before:-0}\" ]; then\n        echo \"==> Saved. Stopping server.\"\n    else\n        echo \"==> WARNING: save was not confirmed within 60 s. Stopping server anyway.\"\n    fi\n    sleep 2\n    kill -9 \"${GAME_PID}\" 2>/dev/null\n    wineserver -k 2>/dev/null\n}\ntrap graceful_stop SIGTERM SIGINT\n\n# Read panel input and forward it while the game is running\nwhile kill -0 \"${GAME_PID}\" 2>/dev/null; do\n    if read -r -t 1 LINE; then\n        LINE=\"${LINE%$'\\r'}\"\n        [ -z \"${LINE}\" ] && continue\n        case \"${LINE}\" in\n            shutdown|stop|quit|exit) graceful_stop ;;\n            *) send_cmd \"${LINE}\" ;;\n        esac\n    elif [ $? -le 128 ]; then\n        # stdin closed (no panel terminal) -> just wait\n        sleep 1\n    fi\ndone\n\nwait \"${GAME_PID}\" 2>/dev/null\nsleep 2\nkill \"${TAIL_PID}\" 2>/dev/null\npkill -f \"tail -n 0 -F UnityPlayer.log\" 2>/dev/null\necho \"==> Server stopped.\"\nwineserver -k 2>/dev/null\nexit 0\nEOF\nchmod +x \"${SERVER_DIR}/s1ds_start.sh\"\n\nif [ ! -f \"${SERVER_DIR}/Schedule I.exe\" ] && [ -n \"${STEAM_USER}\" ]; then\n    echo \"!!! 'Schedule I.exe' is missing after the download. Common causes:\"\n    echo \"!!!  - wrong password / Steam Guard code missing or expired\"\n    echo \"!!!  - the Steam account does not own Schedule I\"\nfi\n\necho \"==> Installation complete\"\n",
+            "container": "ghcr.io/ptero-eggs/installers:debian",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Server Name",
+            "description": "Name of the server.",
+            "env_variable": "SERVER_NAME",
+            "default_value": "Schedule I Server",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Max Players",
+            "description": "Maximum number of players. Vanilla is designed for 4, the mod allows more.",
+            "env_variable": "MAX_PLAYERS",
+            "default_value": "4",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1,32",
+            "field_type": "text"
+        },
+        {
+            "name": "Server Password",
+            "description": "Optional join password. Empty = no password. Note: as of DedicatedServerMod v1.1.2 the password is only reported to Steam and not enforced on join.",
+            "env_variable": "SERVER_PASSWORD",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Steam Query Port",
+            "description": "UDP port for Steam queries (steamGameServerQueryPort). Must be added to the server as an additional allocation.",
+            "env_variable": "QUERY_PORT",
+            "default_value": "27016",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1024,65535",
+            "field_type": "text"
+        },
+        {
+            "name": "Auth Provider",
+            "description": "SteamGameServer = players are verified via Steam (recommended). None = no verification (testing only).",
+            "env_variable": "AUTH_PROVIDER",
+            "default_value": "SteamGameServer",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:SteamGameServer,None",
+            "field_type": "text"
+        },
+        {
+            "name": "Messaging Backend",
+            "description": "FishNetRpc = direct UDP connection (simplest). SteamNetworkingSockets = Steam relay/routing.",
+            "env_variable": "MESSAGING_BACKEND",
+            "default_value": "FishNetRpc",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:FishNetRpc,SteamNetworkingSockets",
+            "field_type": "text"
+        },
+        {
+            "name": "Extra Arguments",
+            "description": "Additional DedicatedServerMod arguments, e.g. --mod-verification --block-known-risky-client-mods true",
+            "env_variable": "EXTRA_ARGS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:512",
+            "field_type": "text"
+        },
+        {
+            "name": "Game Branch",
+            "description": "alternate = Mono build (recommended, most stable under Wine). public = default Steam branch (IL2CPP; set Wine Packages to 'vcrun2019 dotnetdesktop6'). Reinstall the server after changing. Players must use the same branch in Steam (public = Betas: None)!",
+            "env_variable": "SRCDS_BETAID",
+            "default_value": "alternate",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:public,alternate,alternate-beta,beta",
+            "field_type": "text"
+        },
+        {
+            "name": "Steam Username",
+            "description": "Login of a Steam account that owns Schedule I. Empty = no download; upload the game files via SFTP and set Auto Update to 0.",
+            "env_variable": "STEAM_USER",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Steam Password",
+            "description": "Password of the Steam account.",
+            "env_variable": "STEAM_PASS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:128",
+            "field_type": "text"
+        },
+        {
+            "name": "Steam Guard Code",
+            "description": "Only needed for the first login. Enter it, reinstall immediately, then clear it again.",
+            "env_variable": "STEAM_AUTH",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:10",
+            "field_type": "text"
+        },
+        {
+            "name": "Auto Update",
+            "description": "1 = update the game via SteamCMD on every start, 0 = off.",
+            "env_variable": "AUTO_UPDATE",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|boolean",
+            "field_type": "text"
+        },
+        {
+            "name": "Stop Mode",
+            "description": "script = the start script saves and then stops the game itself (safe default). mod = send 'shutdown' to the server mod (only use with DedicatedServerMod v1.1.2 or newer).",
+            "env_variable": "STOP_MODE",
+            "default_value": "script",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:script,mod",
+            "field_type": "text"
+        },
+        {
+            "name": "Wine Packages",
+            "description": "Winetricks packages ensured on every start. For IL2CPP (branch 'public') use 'vcrun2019 dotnetdesktop6'.",
+            "env_variable": "WINETRICKS_RUN",
+            "default_value": "vcrun2019",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:256",
+            "field_type": "text"
+        },
+        {
+            "name": "MelonLoader Version",
+            "description": "MelonLoader release tag (tested with v0.7.2). Applied on reinstall.",
+            "env_variable": "MELONLOADER_VERSION",
+            "default_value": "v0.7.2",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:20",
+            "field_type": "text"
+        },
+        {
+            "name": "DedicatedServerMod Version",
+            "description": "Release tag of ifBars/S1DedicatedServers, e.g. v1.1.2, or 'latest'. Applied on reinstall.",
+            "env_variable": "S1DS_VERSION",
+            "default_value": "latest",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:32",
+            "field_type": "text"
+        },
+        {
+            "name": "App ID",
+            "description": "Steam app ID of Schedule I.",
+            "env_variable": "SRCDS_APPID",
+            "default_value": "3164500",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "required|string|in:3164500",
+            "field_type": "text"
+        },
+        {
+            "name": "Windows Install",
+            "description": "SteamCMD downloads the Windows files.",
+            "env_variable": "WINDOWS_INSTALL",
+            "default_value": "1",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "required|string|in:1",
+            "field_type": "text"
+        },
+        {
+            "name": "XVFB",
+            "description": "Virtual display for Wine.",
+            "env_variable": "XVFB",
+            "default_value": "1",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "required|string|in:1",
+            "field_type": "text"
+        }
+    ]
+}
